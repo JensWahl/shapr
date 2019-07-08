@@ -34,7 +34,7 @@ Imports:
 Suggests: 
     ranger,
     xgboost,
-    testthat, 
+    testthat (>= 2.1.0),
     lintr,
     covr,
     ggplot2
