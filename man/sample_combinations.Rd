@@ -5,11 +5,9 @@
 \title{Helper function to sample a combination of training and testing rows, which does not risk
 getting the same observation twice. Need to improve this help file.}
 \usage{
-sample_combinations(nTrain, nTest, nosamp, separate = F)
+sample_combinations(n_train, n_test, nosamp, separate = F)
 }
 \arguments{
-\item{nosamp}{Number of samples}
-
 \item{separate}{Logical indicating whether the train and test data should be sampled separately
 or in a joint sampling space. If they are sampled separately (which typically would be used when
 optimizing more than one distribution at once) we sample with replacement if more samples than

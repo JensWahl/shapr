@@ -7,55 +7,555 @@
 #' @export
 #'
 #' @author Nikolai Sellereite
-shapley_weights <- function(m, N, s) {
-  (m - 1) / (N * s * (m - s))
+shapley_weights <- function(m, n, s) {
+  (m - 1) / (n * s * (m - s))
+}
+
+#' Get combinations
+#'
+#' @inheritParams global_arguments
+#'
+#' @details
+#' The returned data.table contains the following columns
+#' \describe{
+#' \item{id}{Positive integer. Unique key for combination}
+#' \item{features}{List}
+#' \item{nfeatures}{Positive integer}
+#' \item{n}{Positive integer}
+#' }
+#'
+#' @return data.table
+#'
+#' @export
+#'
+#' @author Nikolai Sellereite, Martin Jullum
+feature_combinations <- function(m,
+                                 exact = TRUE,
+                                 no_samp = 200,
+                                 shapley_weight_inf_replacement = 10^6,
+                                 reduce_dim = TRUE) {
+  if (!exact && no_samp > (2^m - 2) && !replace) {
+    no_samp <- 2^m - 2
+    cat(paste0("noSamp is larger than 2^m = ", 2^m, ". Using exact instead."))
+  }
+  if (exact == TRUE) {
+    n <- 2^m
+    dt <- data.table(id = 1:n)
+    combinations <- lapply(0:m, utils::combn, x = m, simplify = FALSE)
+    dt[, features := unlist(combinations, recursive = FALSE)]
+    dt[, nfeatures := length(features[[1]]), id]
+    dt[, n := .N, nfeatures]
+    dt[!(nfeatures %in% c(0, m)), shapley_weight := shapley_weights(m = m, n = n, s = nfeatures)]
+    dt[nfeatures %in% c(0, m), shapley_weight := shapley_weight_inf_replacement]
+    dt[, no := 1]
+  } else {
+    ## Find weights for given number of features ----------
+    dt_zero <- data.table(nfeatures = head(1:m, -1))
+    dt_zero[, n := unlist(lapply(nfeatures, choose, n = m))]
+    dt_zero[, shapley_weight := shapley_weights(m = m, n = n, s = nfeatures)]
+    dt_zero[, samp_weight := shapley_weight * n]
+    dt_zero[, samp_weight := samp_weight / sum(samp_weight)]
+
+    ## Sample number of features ----------
+    dt <- data.table(
+      nfeatures = sample(
+        x = dt_zero[["nfeatures"]],
+        size = no_samp,
+        replace = TRUE,
+        prob = dt_zero[["samp_weight"]]
+      )
+    )
+
+    ## Sample specific set of features # Not optimal, as it is a bit slow for no_samp -------
+    setkey(dt, nfeatures)
+    samp <- sapply(X = dt$nfeatures, FUN = function(x) {
+      aa <- rep(NA, m)
+      aa[1:x] <- sample(x = 1:m, size = x)
+      aa
+    })
+    samp <- t(apply(X = samp, MARGIN = 2, FUN = sort, na.last = TRUE))
+    samp_list <- apply(X = samp, MARGIN = 1, FUN = function(x) {
+      x[!is.na(x)]
+    })
+
+    dt <- cbind(dt, samp)
+    dt[, no := .N, by = mget(paste0("V", 1:m))] # Counting repetitions of the same sample
+
+    if (reduce_dim) {
+      is_dup <- duplicated(dt)
+      dt[, features := samp_list]
+      dt <- dt[!is_dup, ]
+    } else {
+      dt[, no := 1]
+      dt[, features := samp_list]
+    }
+
+    dt[, paste0("V", 1:m) := NULL]
+    dt[, id := .I]
+
+    nms <- c("id", "nfeatures", "features", "no")
+    setcolorder(dt, nms)
+
+    ## Add zero features and m features ----------
+    dt_zero_all <- data.table(
+      id = seq(dt[, max(id)] + 1, length.out = 2),
+      num_var = c(0, m),
+      comb = c(list(numeric(0)), list(1:m)),
+      no = 1
+    )
+    dt <- rbindlist(list(dt, dt_zero_all))
+    setkey(dt, nfeatures)
+
+    ## Add number of combinations
+    dt <- merge(x = dt, y = dt_zero[, .(nfeatures, n, shapley_weight)], all.x = TRUE, on = "nfeatures")
+    nms <- c("id", "features", "nfeatures", "n", "shapley_weight", "no")
+    setcolorder(dt, nms)
+    dt[, id := .I]
+    dt[nfeatures %in% c(0, m), `:=`(
+      shapley_weight = shapley_weight_inf_replacement,
+      n = 1
+    )]
+  }
+  return(dt)
 }
 
 #' Calculate Shapley weights
 #'
-#' @param X data.table
+#' @param x data.table
 #'
 #' @return data.table
 #'
 #' @export
 #'
 #' @author Nikolai Sellereite
-observation_weights <- function(X, m) {
-  X[-c(1, .N), weight := shapley_weights(m = m, N = N, s = nfeatures), ID]
-  X[c(1, .N), weight := 10^6]
+observation_weights <- function(dt, m) {
+  dt[-c(1, .N), weight := shapley_weights(m = m, n = n, s = nfeatures), id]
+  dt[c(1, .N), weight := 10^6]
 
-  return(X)
+  return(dt)
 }
 
 #' Get weighted matrix
 #'
-#' @param X data.table
+#' @param x data.table
 #'
 #' @return Matrix
 #'
 #' @export
 #'
 #' @author Nikolai Sellereite, Martin Jullum
-weight_matrix <- function(X, use_shapley_weights_in_W = T, normalize_W_weights = T) {
-  if (use_shapley_weights_in_W) {
-    w <- X[["shapley_weight"]] * X[["no"]]
+weight_matrix <- function(dt, use_shapley_weights_in_w = T, normalize_w_weights = T) {
+  if (use_shapley_weights_in_w) {
+    w <- dt[["shapley_weight"]] * dt[["no"]]
   } else {
-    w <- X[["no"]]
-    w[c(1, length(w))] <- X[["shapley_weight"]][c(1, length(w))]
+    w <- dt[["no"]]
+    w[c(1, length(w))] <- dt[["shapley_weight"]][c(1, length(w))]
   }
 
-  if (normalize_W_weights) {
+  if (normalize_w_weights) {
     w[-c(1, length(w))] <- w[-c(1, length(w))] / sum(w[-c(1, length(w))])
   }
 
-  W <- weight_matrix_cpp(
-    features = X[["features"]],
-    m = X[.N][["nfeatures"]],
-    n = X[, .N],
+  w_mat <- weight_matrix_cpp(
+    features = dt[["features"]],
+    m = dt[.N][["nfeatures"]],
+    n = dt[, .N],
     w = w
   )
 
-  return(W)
+  return(w_mat)
+}
+
+#' Scale training and test data
+#'
+#' @inheritParams global_arguments
+#'
+#' @return List
+#'
+#' @export
+#'
+#' @author Nikolai Sellereite
+scale_data <- function(xtrain, xtest, scale = TRUE) {
+  if (!is.data.table(xtrain)) {
+    xtrain <- as.data.table(xtrain)
+  }
+  if (!is.data.table(xtest)) {
+    xtest <- as.data.table(xtest)
+  }
+
+  if (scale) {
+    nms <- colnames(xtrain)
+    setcolorder(xtest, nms)
+    sd <- xtrain[, unname(sapply(.SD, sd, na.rm = TRUE))]
+    xtrain[, (nms) := .SD / sd]
+    xtest[, (nms) := .SD / sd]
+  }
+
+  return(list(xtrain = xtrain, xtest = xtest))
+}
+
+#' Get predictions
+#'
+#' @inheritParams global_arguments
+#'
+#' @return List
+#'
+#' @export
+#'
+#' @author Nikolai Sellereite
+observation_impute <- function(w_kernel, s, xtrain, xtest, w_threshold = .7, no_samp_mc = 1e3) {
+
+  ## Find weights for all combinations and training data
+  dt <- as.data.table(w_kernel)
+  dt[, id := .I]
+  dt <- data.table::melt(data = dt, id.vars = "id", variable.name = "comb", value.name = "w", variable.factor = FALSE)
+
+  ## Remove training data with small weight
+  setkey(dt, comb, w)
+  dt[, w := w / sum(w), comb]
+  dt[, wcum := cumsum(w), comb]
+  dt <- dt[wcum > 1 - w_threshold][, wcum := NULL]
+  dt <- dt[, tail(.SD, no_samp_mc), comb]
+  dt[, comb := gsub(comb, pattern = "V", replacement = ""), comb]
+  dt[, wcomb := as.integer(comb), comb][, comb := NULL]
+
+  ## Generate data used for prediction
+  dt_p <- observation_impute_cpp(
+    id = dt[["id"]],
+    Comb = dt[["wcomb"]],
+    xtrain = xtrain,
+    xtest = xtest,
+    s = s
+  )
+
+  ## Add keys
+  dt_p <- as.data.table(dt_p)
+  setnames(dt_p, colnames(xtrain))
+  dt_p[, wcomb := dt[["wcomb"]]]
+  dt_p[, w := dt[["w"]]]
+
+  return(dt_p)
+}
+
+
+#' Transforms new data to standardized normal (dimension 1) based on other data transformations
+#'
+#' Handled in this way in order to allow using the apply function over this function
+#' @param zx Vector where the first part is the Gaussian data, and last part is
+#' the data with the original transformation
+#' @param n_y How many elements of \code{yx} that belongs to the y-part (new data)
+#' @param type The quantile type used when back-transforming. 7 (default) is the default in stats::quantile().
+#'
+#' @return Vector of transformed new data
+#' @export
+#'
+#' @author Martin Jullum
+inv_gaussian_transform <- function(zx, n_z, type = 7) {
+  ind <- 1:n_z
+  z <- zx[ind]
+  x <- zx[-ind]
+  u <- stats::pnorm(z)
+  x_new <- stats::quantile(x, u, type = type)
+  return(x_new)
+}
+
+
+#' Transforms new data to standardized normal (dimension 1) based on other data transformations
+#'
+#' Handled in this way in order to allow using the apply function over this function
+#' @param yx Vector where the first part is the new data to transform,
+#' and last part is the data with the original transformation
+#' @param n_z How many elements of \code{zx} that belongs to the z-part (Gaussian data)
+#'
+#' @return Vector of back-transformed Gaussian data
+#' @export
+#'
+#' @author Martin Jullum
+gaussian_transform_separate <- function(yx, n_y) {
+  ind <- 1:n_y
+  y <- yx[ind]
+  x <- yx[-ind]
+  tmp <- rank(c(y, x))[1:length(y)]
+  tmp <- tmp - rank(tmp) + 0.5
+  u_y <- tmp / (length(x) + 1)
+  z_y <- stats::qnorm(u_y)
+  return(z_y)
+}
+
+#' Transforms a sample to standardized normal (dimension 1)
+#'
+#' @param x Vector of data to transform
+#'
+#' @return Vector of transformed data
+#' @export
+#'
+#' @author Martin Jullum
+gaussian_transform <- function(x) {
+  u <- rank(x) / (length(x) + 1)
+  z <- stats::qnorm(u)
+  return(z)
+}
+
+
+#' Sample conditional variables using the Gaussian copula approach
+#'
+#' @param given_ind Vector
+#' @param p Positive integer
+#'
+#' @inheritParams global_arguments
+#'
+#' @return data.table with \code{noSamp_MC} (conditional) Gaussian samples
+#'
+#' @export
+#'
+#' @author Martin Jullum
+sample_copula <- function(given_ind, no_samp_mc, mu, cov_mat, p, xtest_gauss_trans, xtrain, xtest) {
+  # Handles the unconditional and full conditional separtely when predicting
+  if (length(given_ind) %in% c(0, p)) {
+    ret <- matrix(xtest, ncol = p, nrow = 1)
+  } else {
+    dependent_ind <- (1:length(mu))[-given_ind]
+    x_given <- xtest_gauss_trans[given_ind]
+    x_given_orig <- xtest[given_ind]
+
+    tmp <- condMVNorm::condMVN(
+      mean = mu,
+      sigma = cov_mat,
+      dependent.ind = dependent_ind,
+      given.ind = given_ind,
+      x.given = x_given
+    )
+
+    ret0_z <- mvnfast::rmvn(n = no_samp_mc, mu = tmp$condMean, sigma = tmp$cond_var)
+
+    ret0_x <- apply(
+      X = rbind(ret0_z, xtrain[, dependent_ind, drop = F]),
+      MARGIN = 2,
+      FUN = inv_gaussian_transform,
+      n_z = no_samp_mc
+    )
+
+    ret <- matrix(NA, ncol = p, nrow = no_samp_mc)
+    ret[, given_ind] <- rep(x_given_orig, each = no_samp_mc)
+    ret[, dependent_ind] <- ret0_x
+  }
+  colnames(ret) <- colnames(xtest)
+  return(as.data.table(ret))
+}
+
+
+#' Sample conditional Gaussian variables
+#'
+#' @param given_ind Vector
+#' @param p Positive integer
+#'
+#' @inheritParams global_arguments
+#'
+#' @return data.table with \code{noSamp_MC} (conditional) Gaussian samples
+#'
+#' @export
+#'
+#' @author Martin Jullum
+sample_gaussian <- function(given_ind, no_samp_mc, mu, cov_mat, p, xtest, ensure_condcov_symmetry = F) {
+
+  # Handles the unconditional and full conditional separtely when predicting
+  if (length(given_ind) %in% c(0, p)) {
+    ret <- matrix(xtest, ncol = p, nrow = 1)
+  } else {
+    dependent_ind <- (1:length(mu))[-given_ind]
+    x_given <- xtest[given_ind]
+    tmp <- condMVNorm::condMVN(
+      mean = mu,
+      sigma = cov_mat,
+      dependent.ind = dependent_ind,
+      given.ind = given_ind,
+      x.given = x_given
+    )
+    if (ensure_condcov_symmetry) {
+      tmp$cond_var <- Matrix::symmpart(tmp$cond_var)
+    }
+
+    ret0 <- mvnfast::rmvn(n = no_samp_mc, mu = tmp$condMean, sigma = tmp$cond_var)
+
+    ret <- matrix(NA, ncol = p, nrow = no_samp_mc)
+    ret[, given_ind] <- rep(x_given, each = no_samp_mc)
+    ret[, dependent_ind] <- ret0
+  }
+  colnames(ret) <- colnames(xtest)
+  return(as.data.table(ret))
+}
+
+#' Get predictions
+#'
+#' @param feature_list List
+#' @param pred_zero Numeric
+#' @inheritParams global_arguments
+#'
+#' @return List
+#'
+#' @export
+#'
+#' @author Nikolai Sellereite, Martin Jullum
+predictions <- function(model,
+                        D,
+                        h_optim_vec,
+                        kernel_metric,
+                        s,
+                        xtrain,
+                        xtest,
+                        w_threshold = .7,
+                        no_samp_mc = 1e3,
+                        verbose = FALSE,
+                        cond_approach_list,
+                        feature_list,
+                        pred_zero,
+                        mu,
+                        cov_mat,
+                        mu_gauss_trans = mu_gauss_trans,
+                        sigma_gauss_trans = sigma_gauss_trans,
+                        xtest_gauss_trans,
+                        ensure_condcov_symmetry = F) {
+  p <- ncol(xtrain)
+
+  dt_p_gaussian <- dt_p_copula <- dt_p_empirical <- NULL
+
+  if ("Gaussian" %in% names(cond_approach_list)) {
+    ## Assume Gaussian distributed variables and sample from the various conditional distributions
+    these_wcomb <- cond_approach_list$Gaussian
+    these_wcomb <- these_wcomb[!(these_wcomb %in% c(1, nrow(s)))]
+
+    samp_list <- lapply(
+      X = feature_list[these_wcomb],
+      FUN = sample_gaussian,
+      no_samp_mc = no_samp_mc,
+      mu = mu,
+      cov_mat = cov_mat,
+      p = p,
+      xtest = xtest,
+      ensure_condcov_symmetry = ensure_condcov_symmetry
+    )
+
+    dt_p_gaussian <- rbindlist(samp_list, idcol = "wcomb")
+    dt_p_gaussian[, wcomb := these_wcomb[wcomb]] # Correcting originally assigned wcomb
+    dt_p_gaussian[, w := 1 / no_samp_mc]
+  }
+  if ("copula" %in% names(cond_approach_list)) {
+    these_wcomb <- cond_approach_list$copula
+    these_wcomb <- these_wcomb[!(these_wcomb %in% c(1, nrow(s)))]
+
+
+    samp_list <- lapply(
+      X = feature_list[these_wcomb],
+      FUN = sample_copula,
+      no_samp_mc = no_samp_mc,
+      mu = mu_gauss_trans,
+      cov_mat = sigma_gauss_trans,
+      p = p,
+      xtest_gauss_trans = xtest_gauss_trans,
+      xtrain = xtrain,
+      xtest = xtest
+    )
+
+    dt_p_copula <- rbindlist(samp_list, idcol = "wcomb")
+    dt_p_copula[, wcomb := these_wcomb[wcomb]] # Correcting originally assigned wcomb
+    dt_p_copula[, w := 1 / no_samp_mc]
+  }
+
+  if ("empirical" %in% names(cond_approach_list)) {
+    these_wcomb <- cond_approach_list$empirical
+    these_wcomb <- these_wcomb[!(these_wcomb %in% c(1, nrow(s)))]
+
+    no_wcomb <- length(these_wcomb)
+
+    # Handle the computation of all training-test weights for ALL combinations here, before looping
+    if (kernel_metric == "independence") {
+      # Just random noise to "fake" a distance between observations
+      w_kernel <- array(stats::runif(no_wcomb * nrow(xtrain)), dim = c(nrow(xtrain), no_wcomb))
+    }
+    if (kernel_metric == "Gaussian") {
+      val <- t(t(-0.5 * D) / h_optim_vec^2)
+      w_kernel <- exp(val)
+      # To avoid numerical problems for small sigma values, we need to substract some constant from
+      # val here. Check if it is possible to do this per column/row of l$D[,i,]
+    }
+
+    ## Get imputed data
+    dt_p_empirical <- observation_impute(
+      w_kernel = w_kernel,
+      s = s[these_wcomb, ],
+      xtrain = xtrain,
+      xtest = xtest,
+      w_threshold = w_threshold,
+      no_samp_mc = no_samp_mc
+    )
+    dt_p_empirical[, wcomb := these_wcomb[wcomb]] # Correcting originally assigned wcomb
+  }
+
+  ## Performing prediction
+  nms <- colnames(xtest)
+
+  dt_p <- rbind(dt_p_gaussian, dt_p_copula, dt_p_empirical)
+  dt_p <- merge(dt_p, data.table(wcomb = c(1, 2^p), w = 1), all = T)
+  setkey(dt_p, wcomb)
+
+
+  dt_p[!(wcomb %in% c(1, 2^p)), p_hat := prediction_vector(model = model, data = .SD), .SDcols = nms]
+  dt_p[wcomb == 2^p, p_hat := prediction_vector(model = model, data = as.data.frame(xtest))]
+  dt_p[wcomb == 1, p_hat := pred_zero]
+
+  ## Get mean probability
+  dt_res <- dt_p[, .(k = sum((p_hat * w) / sum(w))), wcomb]
+  setkey(dt_res, wcomb)
+
+  return(dt_res)
+}
+
+
+#' Predict on vector form
+#'
+#' @description Performs prediction of response \code{\link[stats]{lm}}, \code{\link[stats]{glm}},
+#' \code{\link[ranger]{ranger}} and \code{\link[xgboost]{xgboost}} with binary or continuous response.
+#' Output the prediction on vector form. May let the user provide this function to handle any
+#' prediction model in the future.
+#'
+#' @inheritParams global_arguments
+#' @param data data.table or data.frame with data to perform prediction
+#' @return Vector of predictions
+#'
+#' @export
+#'
+#'
+#' @author Martin Jullum
+prediction_vector <- function(model, data) {
+  ## Figure out which model type we're using
+  model_class <- head(class(model), 1)
+
+  if (model_class == "glm") {
+    if (model$family[[1]] == "binomial") {
+      ret <- predict(model, newdata = data, type = "response")
+    } else {
+      ret <- predict(model, newdata = data)
+    }
+  }
+  if (model_class == "lm") {
+    ret <- predict(model, newdata = data)
+  }
+  if (model_class == "ranger") {
+    if (model$treetype == "Probability estimation") {
+      ret <- predict(model, data = data)$predictions[, 2]
+    } else {
+      ret <- predict(model, data = data)$predictions
+    }
+  }
+  if (model_class == "xgb.Booster") {
+    ret <- predict(model, newdata = as.matrix(data))
+  }
+
+  if (model_class == "gam") {
+    ret <- predict(model, newdata = data)
+  }
+
+  return(ret)
 }
 
 #' Computes kernel SHAP values for test data
@@ -70,7 +570,7 @@ weight_matrix <- function(X, use_shapley_weights_in_W = T, normalize_W_weights =
 #' original covariance is just barely positive definite.
 #'
 #' @details If \code{cond_approach} is a list, the elements in the list refers to the rows in
-#' \code{l$X} that ought to be included in each of the approaches!
+#' \code{l$dt} that ought to be included in each of the approaches!
 #'
 #' @return List with kernel SHAP values (\code{Kshap}) and other object used to perform
 #' the computation (helpful for debugging etc.)
@@ -80,27 +580,27 @@ weight_matrix <- function(X, use_shapley_weights_in_W = T, normalize_W_weights =
 #' @author Martin Jullum
 compute_kshap <- function(model,
                           l,
-                          noSamp_MC = 1e3,
+                          no_samp_mc = 1e3,
                           verbose = FALSE,
                           cond_approach = "empirical",
                           empirical_settings = list(
                             type = "fixed_sigma",
                             fixed_sigma_vec = 0.1,
-                            AICc_no_samp_per_optim = 1000,
+                            aicc_no_samp_per_optim = 1000,
                             AIC_optim_max_eval = 20,
                             AIC_optim_startval = 0.1,
                             w_threshold = 0.95
                           ),
                           pred_zero,
                           mu = NULL,
-                          Sigma = NULL,
+                          cov_mat = NULL,
                           ensure_condcov_symmetry = F) {
   tt <- proc.time()
 
   ll <- list()
 
   if (is.character(cond_approach)) {
-    cond_approach_list <- list(1:nrow(l$S))
+    cond_approach_list <- list(1:nrow(l$s))
     names(cond_approach_list) <- cond_approach
   }
   if (is.list(cond_approach)) {
@@ -109,12 +609,12 @@ compute_kshap <- function(model,
 
   if ("empirical" %in% names(cond_approach_list)) {
     these_empirical <- cond_approach_list$empirical
-    exclude_emp <- (these_empirical %in% c(1, nrow(l$S)))
+    exclude_emp <- (these_empirical %in% c(1, nrow(l$s)))
 
     these_empirical <- these_empirical[!exclude_emp]
 
     no_empirical <- length(these_empirical)
-    h_optim_mat <- matrix(NA, ncol = nrow(l$Xtest), nrow = no_empirical) # Each test observation has one column
+    h_optim_mat <- matrix(NA, ncol = nrow(l$xtest), nrow = no_empirical) # Each test observation has one column
 
     # Checking whether any of the distance are not pre-computed.
     if (any(!(these_empirical %in% l$D_for_these_varcomb))) {
@@ -145,27 +645,27 @@ compute_kshap <- function(model,
 
         # Procedure for sampling a combination of an index in the training and the test sets
         optimsamp <- sample_combinations(
-          nTrain = nrow(l$Xtrain),
-          nTest = nrow(l$Xtest),
-          nosamp = empirical_settings$AICc_no_samp_per_optim,
+          n_train = nrow(l$xtrain),
+          n_test = nrow(l$xtest),
+          nosamp = empirical_settings$aicc_no_samp_per_optim,
           separate = T
         )
 
         # Updating parameter (only if it is larger than nTrain*nTest)
-        empirical_settings$AICc_no_samp_per_optim <- nrow(optimsamp)
+        empirical_settings$aicc_no_samp_per_optim <- nrow(optimsamp)
 
-        nloops <- nrow(l$Xtest)
+        nloops <- nrow(l$xtest)
 
         # Include test here that empirical settings is defined as it should be
         if (empirical_settings$type == "AICc_each_k") {
           # Optimization is done only once for all distributions which conditions on
           # exactly k variables
-          these_k <- unique(l$X$nfeatures[these_empirical])
+          these_k <- unique(l$dt$nfeatures[these_empirical])
 
           for (i in these_k) {
-            these_cond <- l$X[ID %in% these_empirical][nfeatures == i, ID]
+            these_cond <- l$dt[id %in% these_empirical][nfeatures == i, id]
 
-            cutters <- 1:empirical_settings$AICc_no_samp_per_optim
+            cutters <- 1:empirical_settings$aicc_no_samp_per_optim
             no_cond <- length(these_cond)
 
             cond_samp <- cut(
@@ -178,51 +678,51 @@ compute_kshap <- function(model,
 
 
             for (loop in 1:nloops) {
-              this.optimsamp <- optimsamp
-              this.optimsamp$samp_test <- loop
+              this_optimsamp <- optimsamp
+              this_optimsamp$samp_test <- loop
 
               j <- 1
-              X_list <- X.pred.list <- mcov_list <- list()
+              x_list <- x_pred_list <- mcov_list <- list()
               for (this_cond in unique(cond_samp)) {
                 these_inds <- which(cond_samp == this_cond)
-                these_train <- this.optimsamp$samp_train[these_inds]
-                these_test <- this.optimsamp$samp_test[these_inds]
+                these_train <- this_optimsamp$samp_train[these_inds]
+                these_test <- this_optimsamp$samp_test[these_inds]
 
                 # Hacky way to handle the situation when optimizing in the usual way. Needs to be improved!
-                these_train <- 1:nrow(l$Xtrain)
-                these_test <- sample(x = these_test, size = nrow(l$Xtrain), replace = T)
-                current_cond_samp <- rep(unique(cond_samp), each = nrow(l$Xtrain))
+                these_train <- 1:nrow(l$xtrain)
+                these_test <- sample(x = these_test, size = nrow(l$xtrain), replace = T)
+                current_cond_samp <- rep(unique(cond_samp), each = nrow(l$xtrain))
 
-                S <- l$S[this_cond, ]
+                s <- l$s[this_cond, ]
 
-                S.cols <- which(as.logical(S))
-                Sbar.cols <- which(as.logical(1 - S))
+                s_cols <- which(as.logical(s))
+                sbar_cols <- which(as.logical(1 - s))
 
-                X_list[[j]] <- as.matrix(subset(l$Xtrain, select = S.cols)[these_train, ])
-                mcov_list[[j]] <- stats::cov(X_list[[j]])
+                x_list[[j]] <- as.matrix(subset(l$xtrain, select = s_cols)[these_train, ])
+                mcov_list[[j]] <- stats::cov(x_list[[j]])
 
-                Xtrain.Sbar <- subset(l$Xtrain, select = Sbar.cols)[these_train, ]
-                Xtest.S <- subset(l$Xtest, select = S.cols)[these_test, ]
-                X.pred.list[[j]] <- cbind(Xtrain.Sbar, Xtest.S)
+                xtrain_sbar <- subset(l$xtrain, select = sbar_cols)[these_train, ]
+                xtest_s <- subset(l$xtest, select = s_cols)[these_test, ]
+                x_pred_list[[j]] <- cbind(xtrain_sbar, xtest_s)
 
                 j <- j + 1
               }
 
               # Combining the X's for doing prediction
-              X.pred <- rbindlist(X.pred.list, use.names = T)
-              X.nms <- colnames(l$Xtrain)
-              setcolorder(X.pred, X.nms)
+              x_pred <- rbindlist(x_pred_list, use.names = T)
+              x_nms <- colnames(l$xtrain)
+              setcolorder(x_pred, x_nms)
               # Doing prediction jointly (for speed), and then splitting them back into the y_list
-              pred <- prediction_vector(model = model, data = X.pred)
+              pred <- prediction_vector(model = model, data = x_pred)
               y_list <- split(pred, current_cond_samp)
               names(y_list) <- NULL
 
 
               ## Doing the numerical optimization -------
-              nlm.obj <- suppressWarnings(stats::nlminb(
+              nlm_obj <- suppressWarnings(stats::nlminb(
                 start = empirical_settings$AIC_optim_startval,
                 objective = aicc_full_cpp,
-                X_list = X_list,
+                x_list = x_list,
                 mcov_list = mcov_list,
                 S_scale_dist = T,
                 y_list = y_list,
@@ -236,48 +736,48 @@ compute_kshap <- function(model,
 
 
 
-              h_optim_mat[match(these_cond, these_empirical), loop] <- nlm.obj$par
+              h_optim_mat[match(these_cond, these_empirical), loop] <- nlm_obj$par
             }
           }
         }
 
         if (empirical_settings$type == "AICc_full") {
           for (i in these_empirical) {
-            S <- l$S[i, ]
+            s <- l$s[i, ]
 
-            S.cols <- which(as.logical(S))
-            Sbar.cols <- which(as.logical(1 - S))
+            s_cols <- which(as.logical(s))
+            sbar_cols <- which(as.logical(1 - s))
 
             for (loop in 1:nloops) {
-              this.optimsamp <- optimsamp
-              this.optimsamp$samp_test <- loop
+              this_optimsamp <- optimsamp
+              this_optimsamp$samp_test <- loop
 
-              these_train <- this.optimsamp$samp_train
-              these_test <- this.optimsamp$samp_test
+              these_train <- this_optimsamp$samp_train
+              these_test <- this_optimsamp$samp_test
 
               # Hacky way to handle the situation when optimizing in the usual way. Needs to be improved!
-              these_train <- 1:nrow(l$Xtrain)
-              these_test <- sample(x = these_test, size = nrow(l$Xtrain), replace = T)
+              these_train <- 1:nrow(l$xtrain)
+              these_test <- sample(x = these_test, size = nrow(l$xtrain), replace = T)
 
-              X_list <- list(as.matrix(subset(l$Xtrain, select = S.cols)[these_train, ]))
-              mcov_list <- list(stats::cov(X_list[[1]]))
+              x_list <- list(as.matrix(subset(l$xtrain, select = s_cols)[these_train, ]))
+              mcov_list <- list(stats::cov(x_list[[1]]))
 
-              Xtrain.Sbar <- subset(l$Xtrain, select = Sbar.cols)[these_train, ]
-              Xtest.S <- subset(l$Xtest, select = S.cols)[these_test, ]
-              X.pred <- cbind(Xtrain.Sbar, Xtest.S)
+              xtrain_sbar <- subset(l$xtrain, select = sbar_cols)[these_train, ]
+              xtest_s <- subset(l$xtest, select = s_cols)[these_test, ]
+              x_pred <- cbind(xtrain_sbar, xtest_s)
 
-              X.nms <- colnames(l$Xtrain)
-              setcolorder(X.pred, X.nms)
+              x_nms <- colnames(l$xtrain)
+              setcolorder(x_pred, x_nms)
 
-              pred <- prediction_vector(model = model, data = X.pred)
+              pred <- prediction_vector(model = model, data = x_pred)
               y_list <- list(pred)
 
               ## Running the nonlinear optimization
 
-              nlm.obj <- suppressWarnings(stats::nlminb(
+              nlm_obj <- suppressWarnings(stats::nlminb(
                 start = empirical_settings$AIC_optim_startval,
                 objective = aicc_full_cpp,
-                X_list = X_list,
+                x_list = x_list,
                 mcov_list = mcov_list,
                 S_scale_dist = T,
                 y_list = y_list,
@@ -290,55 +790,55 @@ compute_kshap <- function(model,
               ))
 
 
-              h_optim_mat[match(i, these_empirical), loop] <- nlm.obj$par
+              h_optim_mat[match(i, these_empirical), loop] <- nlm_obj$par
             }
           }
         }
       }
     }
 
-    h_optim_DT <- data.table(varcomb = these_empirical, h_optim_mat)
-    colnames(h_optim_DT)[-1] <- paste0("Testobs_", 1:nrow(l$Xtest))
+    h_optim_dt <- data.table(varcomb = these_empirical, h_optim_mat)
+    colnames(h_optim_dt)[-1] <- paste0("Testobs_", 1:nrow(l$xtest))
   } else {
     h_optim_mat <- NULL
-    h_optim_DT <- NULL
+    h_optim_dt <- NULL
   }
 
   if (is.null(mu)) {
     # Using the mean of the training data in the Gaussian approach if not provided directly
-    mu <- colMeans(l$Xtrain)
+    mu <- colMeans(l$xtrain)
   }
-  if (is.null(Sigma)) {
+  if (is.null(cov_mat)) {
     # Using the sample covariance of the training data in the Gaussian approach if not provided directly
-    Sigma <- stats::cov(l$Xtrain)
+    cov_mat <- stats::cov(l$xtrain)
   }
 
-  if (any(eigen(Sigma)$values <= 1e-06)) {
+  if (any(eigen(cov_mat)$values <= 1e-06)) {
     # Make matrix positive definite if not, or close to not.
-    Sigma <- as.matrix(Matrix::nearPD(Sigma)$mat)
+    cov_mat <- as.matrix(Matrix::nearPD(cov_mat)$mat)
   }
-  Xtest.mat <- as.matrix(l$Xtest)
-  Xtrain.mat <- as.matrix(l$Xtrain)
+  xtest_mat <- as.matrix(l$xtest)
+  xtrain_mat <- as.matrix(l$xtrain)
 
   # Only needed for copula method, but is not time consuming anyway
-  Xtrain_Gauss_trans <- apply(X = l$Xtrain, MARGIN = 2, FUN = gaussian_transform)
-  Xtest_Gauss_trans <- apply(
-    X = rbind(l$Xtest, l$Xtrain),
+  xtrain_gauss_trans <- apply(X = l$xtrain, MARGIN = 2, FUN = gaussian_transform)
+  xtest_gauss_trans <- apply(
+    X = rbind(l$xtest, l$xtrain),
     MARGIN = 2,
     FUN = gaussian_transform_separate,
-    n_y = nrow(l$Xtest)
+    n_y = nrow(l$xtest)
   )
 
-  mu_Gauss_trans <- rep(0, ncol(l$Xtrain))
-  Sigma_Gauss_trans <- stats::cov(Xtrain_Gauss_trans)
-  if (any(eigen(Sigma_Gauss_trans)$values <= 1e-06)) {
-    Sigma_Gauss_trans <- as.matrix(Matrix::nearPD(Sigma_Gauss_trans)$mat)
+  mu_gauss_trans <- rep(0, ncol(l$xtrain))
+  sigma_gauss_trans <- stats::cov(xtrain_gauss_trans)
+  if (any(eigen(sigma_gauss_trans)$values <= 1e-06)) {
+    sigma_gauss_trans <- as.matrix(Matrix::nearPD(sigma_gauss_trans)$mat)
   }
 
-  for (i in l$Xtest[, .I]) {
+  for (i in l$xtest[, .I]) {
     # This may be parallelized when the prediction function is not parallelized.
     if (verbose > 0) {
-      print(sprintf("%d out of %d", i, l$Xtest[, .N]))
+      print(sprintf("%d out of %d", i, l$xtest[, .N]))
     }
 
     ll[[i]] <- predictions(
@@ -346,46 +846,46 @@ compute_kshap <- function(model,
       D = l$D[, i, ],
       h_optim_vec = h_optim_mat[, i],
       kernel_metric = kernel_metric,
-      S = l$S,
-      Xtrain = Xtrain.mat,
-      Xtest = Xtest.mat[i, , drop = FALSE],
+      s = l$s,
+      xtrain = xtrain_mat,
+      xtest = xtest_mat[i, , drop = FALSE],
       w_threshold = empirical_settings$w_threshold,
-      noSamp_MC = noSamp_MC,
+      no_samp_mc = no_samp_mc,
       verbose = verbose,
       cond_approach_list = cond_approach_list,
-      feature_list = l$X$features,
+      feature_list = l$dt$features,
       pred_zero = pred_zero,
       mu = mu,
-      Sigma = Sigma,
-      mu_Gauss_trans = mu_Gauss_trans,
-      Sigma_Gauss_trans = Sigma_Gauss_trans,
-      Xtest_Gauss_trans = Xtest_Gauss_trans[i, , drop = FALSE],
+      cov_mat = cov_mat,
+      mu_gauss_trans = mu_gauss_trans,
+      sigma_gauss_trans = sigma_gauss_trans,
+      xtest_gauss_trans = xtest_gauss_trans[i, , drop = FALSE],
       ensure_condcov_symmetry = ensure_condcov_symmetry
     )
     ll[[i]][, id := i]
   }
 
-  DT <- rbindlist(ll)
+  dt <- rbindlist(ll)
 
-  Kshap <- matrix(0, nrow = nrow(l$Xtest), ncol = nrow(l$W))
-  for (i in l$Xtest[, .I]) {
-    Kshap[i, ] <- l$W %*% DT[id == i, k]
+  kshap <- matrix(0, nrow = nrow(l$xtest), ncol = nrow(l$w_mat))
+  for (i in l$xtest[, .I]) {
+    qkshap[i, ] <- l$w_mat %*% dt[id == i, k]
   }
 
-  # Makes data.table from Kshap
-  Kshap <- as.data.table(Kshap)
-  colnames(Kshap) <- c("none", colnames(l$Xtrain))
+  # Makes data.table from kshap
+  kshap <- as.data.table(kshap)
+  colnames(kshap) <- c("none", colnames(l$xtrain))
 
 
   # Makes vector with the full prediction that is decomposed
-  pred_vec <- DT[wcomb == 2^ncol(l$Xtrain), k]
+  pred_vec <- dt[wcomb == 2^ncol(l$xtrain), k]
 
   tt <- proc.time() - tt
 
   ret_list <- list(
-    Kshap = Kshap,
+    kshap = kshap,
     pred_vec = pred_vec,
-    other_objects = list(ll = ll, DT = DT, h_optim_DT = h_optim_DT, comp_time = tt)
+    other_objects = list(ll = ll, dt = dt, h_optim_dt = h_optim_dt, comp_time = tt)
   )
   return(ret_list)
 }
@@ -400,43 +900,43 @@ compute_kshap <- function(model,
 #' @export
 #'
 #' @author Nikolai Sellereite
-prepare_kshap <- function(Xtrain,
-                          Xtest,
+prepare_kshap <- function(xtrain,
+                          xtest,
                           exact = TRUE,
-                          noSamp = NULL,
+                          no_samp = NULL,
                           shapley_weight_inf_replacement = 10^6,
-                          compute_distances_for_no_var = 0:ncol(Xtrain)) {
+                          compute_distances_for_no_var = 0:ncol(xtrain)) {
 
   ## Convert data to data.table format --------------
-  if (!is.data.table(Xtrain)) {
-    Xtrain <- as.data.table(Xtrain)
+  if (!is.data.table(xtrain)) {
+    xtrain <- as.data.table(xtrain)
   }
-  if (!is.data.table(Xtest)) {
-    Xtest <- as.data.table(Xtest)
+  if (!is.data.table(xtest)) {
+    xtest <- as.data.table(xtest)
   }
 
   ## Get all combinations ----------------
-  X <- feature_combinations(
-    m = ncol(Xtrain),
+  dt <- feature_combinations(
+    m = ncol(xtrain),
     exact = exact,
-    noSamp = noSamp,
+    no_samp = no_samp,
     shapley_weight_inf_replacement = shapley_weight_inf_replacement,
     reduce_dim = TRUE
   )
 
   ## Get weighted matrix ----------------
-  W <- weight_matrix(X, use_shapley_weights_in_W = ifelse(exact, T, F), normalize_W_weights = T)
+  w_mat <- weight_matrix(dt, use_shapley_weights_in_w = ifelse(exact, T, F), normalize_w_weights = T)
 
-  mcov <- stats::cov(Xtrain)
+  mcov <- stats::cov(xtrain)
   # Note that we could move distance_metric if-test here and replace by diag(m) if "Euclidean"
   # once you see everything works fine
 
   if (!is.null(compute_distances_for_no_var[1])) {
     # Only compute the distances if the empirical approach is used
     D <- mahalanobis_distance_cpp(
-      featureList = X[nfeatures %in% compute_distances_for_no_var, features],
-      Xtrain_mat = as.matrix(Xtrain),
-      Xtest_mat = as.matrix(Xtest),
+      feature_list = dt[nfeatures %in% compute_distances_for_no_var, features],
+      xtrain_mat = as.matrix(xtrain),
+      xtest_mat = as.matrix(xtest),
       mcov = mcov,
       S_scale_dist = T
     )
@@ -453,13 +953,13 @@ prepare_kshap <- function(Xtrain,
 
 
   ## Get feature matrix ---------
-  S <- feature_matrix_cpp(
-    features = X[["features"]],
-    nfeatures = ncol(Xtrain)
+  s <- feature_matrix_cpp(
+    features = dt[["features"]],
+    nfeatures = ncol(xtrain)
   )
 
   return(list(
-    D = D, S = S, W = W, X = X, Xtrain = Xtrain, Xtest = Xtest,
-    D_for_these_varcomb = X[nfeatures %in% compute_distances_for_no_var, which = TRUE]
+    D = D, s = s, w_mat = w_mat, dt = dt, xtrain = xtrain, xtest = xtest,
+    D_for_these_varcomb = dt[nfeatures %in% compute_distances_for_no_var, which = TRUE]
   ))
 }

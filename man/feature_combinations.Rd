@@ -4,8 +4,8 @@
 \alias{feature_combinations}
 \title{Get combinations}
 \usage{
-feature_combinations(m, exact = TRUE, noSamp = 200,
-  shapley_weight_inf_replacement = 10^6, reduce_dim = T)
+feature_combinations(m, exact = TRUE, no_samp = 200,
+  shapley_weight_inf_replacement = 10^6, reduce_dim = TRUE)
 }
 \arguments{
 \item{m}{Integer. Total number of features}
@@ -13,7 +13,7 @@ feature_combinations(m, exact = TRUE, noSamp = 200,
 \item{exact}{Logical. If TRUE, uses the full sum in the Shapley formula, if FALSE, uses a
 sampling approach to approximate the sum}
 
-\item{noSamp}{Integer. How many samples to use when approximating the sum in the Shapley formula
+\item{no_samp}{Integer. How many samples to use when approximating the sum in the Shapley formula
 (previously called \code{nrows})}
 
 \item{shapley_weight_inf_replacement}{Numeric. Indicating which weight to use for the full
@@ -31,10 +31,10 @@ Get combinations
 \details{
 The returned data.table contains the following columns
 \describe{
-\item{ID}{Positive integer. Unique key for combination}
+\item{id}{Positive integer. Unique key for combination}
 \item{features}{List}
-\item{nfeautres}{Positive integer}
-\item{N}{Positive integer}
+\item{nfeatures}{Positive integer}
+\item{n}{Positive integer}
 }
 }
 \author{

@@ -4,21 +4,19 @@
 \alias{global_arguments}
 \title{Set of global arguments used in the package}
 \usage{
-global_arguments(m, N, s, Xtrain, Xtest, nsamples, features, exact, sigma,
-  model, nrows, scale, w_threshold, n_threshold, verbose, W, S, D, I,
+global_arguments(m, n, xtrain, xtest, nsamples, features, exact, cov_mat,
+  model, nrows, scale, w_threshold, n_threshold, verbose, w, s, D, I,
   cond_approach = "empirical", p_default,
   distance_metric = "Euclidean", kernel_metric = "Gaussian")
 }
 \arguments{
 \item{m}{Integer. Total number of features}
 
-\item{N}{Integer. Number of combinations}
+\item{n}{Integer. Number of combinations}
 
-\item{s}{Integer. Number of chosen}
+\item{xtrain}{Matrix, data.frame or data.table with the features from the training data}
 
-\item{Xtrain}{Matrix, data.frame or data.table with the features from the training data}
-
-\item{Xtest}{Matrix, data.frame or data.table with the features, whose predictions ought to
+\item{xtest}{Matrix, data.frame or data.table with the features, whose predictions ought to
 be explained (test data)}
 
 \item{nsamples}{Integer. Number of samples}
@@ -28,7 +26,7 @@ be explained (test data)}
 \item{exact}{Logical. If TRUE, uses the full sum in the Shapley formula, if FALSE, uses a
 sampling approach to approximate the sum}
 
-\item{sigma}{Numeric}
+\item{cov_mat}{Covariance matrix of training set}
 
 \item{model}{Model object. Fitted model that is used to produce the predictions}
 
@@ -36,16 +34,16 @@ sampling approach to approximate the sum}
 
 \item{verbose}{Integer. How much information to print during function execution (in development)}
 
-\item{W}{Matrix}
+\item{w}{Matrix}
 
-\item{S}{Matrix}
+\item{s}{Matrix}
 
 \item{D}{Matrix}
 
 \item{I}{Matrix}
 
 \item{cond_approach}{String or list. When being a list, the elements in the list refers to the
-rows in l$X that ought to be included in each of the approaches!}
+rows in l$x that ought to be included in each of the approaches!}
 
 \item{p_default}{Numeric}
 
@@ -59,11 +57,11 @@ conditional distribution. Defaults to "Gaussian" [\eqn{\exp(-D/2\sigma)}], with 
 (imputing independently, ignoring any distance) being the second option "Gaussian_old"
 [\eqn{\sqrt(\exp(-D/2\sigma))}] is also kept for reproducibility.}
 
-\item{Xtrain_mat}{Matrix with the features from the training data}
+\item{xtrain_mat}{Matrix with the features from the training data}
 
-\item{Xtest_mat}{Matrix with the features, whose predictions ought to be explained (test data)}
+\item{xtest_mat}{Matrix with the features, whose predictions ought to be explained (test data)}
 
-\item{noSamp}{Integer. How many samples to use when approximating the sum in the Shapley formula
+\item{no_samp}{Integer. How many samples to use when approximating the sum in the Shapley formula
 (previously called \code{nrows})}
 
 \item{shapley_weight_inf_replacement}{Numeric. Indicating which weight to use for the full
@@ -74,13 +72,13 @@ squares problem by merging identical columns and adjusting their weights.}
 
 \item{l}{List. The output from the \code{prepare_kshap} function}
 
-\item{noSamp_MC}{Positive integer. Indicating the maximum number of samples to use in the
+\item{no_samp_mc}{Positive integer. Indicating the maximum number of samples to use in the
 Monte Carlo integration for every conditional expectation (previously called \code{n_threshold})}
 
 \item{mu}{Numeric vector. (Optional) Containing the mean of the data generating distribution.
 NULL means it is estimated from the data if needed (in the Gaussian approach).}
 
-\item{Sigma}{Numeric matrix. (Optional) Containing the covariance matrix of the data generating
+\item{sigma}{Numeric matrix. (Optional) Containing the covariance matrix of the data generating
 distribution. NULL means it is estimated from the data if needed (in the Gaussian approach).}
 
 \item{verbose}{Logical}
@@ -93,14 +91,12 @@ contains one vector each, each containing the row numbers of the S-matrix comput
 \code{prepare_kshap} that whose corresponding conditional expectations should be computed with
 that method. Any number not specified is computed with the default empirical method.}
 
-\item{W_kernel}{Array. Contains all nonscaled weights between training and testing observations
+\item{w_kernel}{Array. Contains all nonscaled weights between training and testing observations
 for all combinations.}
 
-\item{Xtest_Gauss_trans}{Vector with the Gaussian transformed test observations}
+\item{xtest_gauss_trans}{Vector with the Gaussian transformed test observations}
 
 \item{mu}{Mean vector of training set}
-
-\item{Sigma}{Covariance matrix of training set}
 }
 \description{
 Set of global arguments used in the package

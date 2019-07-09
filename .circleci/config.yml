@@ -19,11 +19,14 @@ jobs:
             - deps01-{{ .Branch }}
             - deps01-
       - run:
-          name: Install lib2git-dev
-          command: apt-get update && apt-get install -y libgit2-dev
+          name: Install lib2git-dev and libxml2-dev
+          command: apt-get update && apt-get install -y libgit2-dev libxml2-dev
       - run:
           name: Install devtools
           command: R -e 'install.packages("devtools")'
+      - run:
+          name: Install lintr
+          command: R -e 'devtools::install_github("jimhester/lintr")'
       - run:
           name: Install dependencies
           command: R -e 'devtools::install_deps(dependencies = TRUE, upgrade = "never")'
@@ -41,6 +44,11 @@ jobs:
           name: Move files
           command: mv ${RCHECK_DIR} /tmp/Rcheck
           when: always
+      - run:
+          name: Lints
+          when: on_success
+          command: |
+            export CI=""; R -e 'lints <- lintr::lint_package(); print(lints); if(length(lints) > 0) stop("Package contains lints")'
       - run:
           name: Code coverage
           when: on_success
