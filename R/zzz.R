@@ -6,8 +6,8 @@
       c(
         "id", "n", "w_mat", "features", "keep", "m", "mphat", "nfeatures", "phat",
         "test", "xtest", "xtrain", "weight", "test_id", "sample_id",
-        "comb", "p_hat", "w", "wcomb", "wcum", "id", "k",
-
+        "comb", "p_hat", "w", "wcomb", "wcum", "id", "k", "phi", "header",
+        "pred", "variable", "description",
         ".", ".N", ".I", ".GRP", ".SD"
       )
     )
